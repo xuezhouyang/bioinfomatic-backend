@@ -321,26 +321,53 @@
           updateProgress(1, 1, '未找到会话列表，导出当前会话...');
           result = await sendToContent({ action: 'exportCurrent', options });
         } else {
-          // Export each conversation
+          // Export each conversation by navigating the tab from the popup side.
+          // We cannot navigate from content script as it destroys itself.
           const allData = [];
           const list = listResult.data;
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
           for (let i = 0; i < list.length; i++) {
             if (exportCancelled) break;
 
             updateProgress(i + 1, list.length, list[i].title);
-            const convResult = await sendToContent({
-              action: 'exportConversationAt',
-              url: list[i].url,
-              title: list[i].title,
+
+            // Navigate the tab to the conversation URL
+            await chrome.tabs.update(tab.id, { url: list[i].url });
+
+            // Wait for the page to finish loading
+            await new Promise((resolve) => {
+              function onUpdated(tabId, changeInfo) {
+                if (tabId === tab.id && changeInfo.status === 'complete') {
+                  chrome.tabs.onUpdated.removeListener(onUpdated);
+                  // Extra delay for dynamic content rendering
+                  setTimeout(resolve, 2000);
+                }
+              }
+              chrome.tabs.onUpdated.addListener(onUpdated);
+              // Timeout safety
+              setTimeout(() => {
+                chrome.tabs.onUpdated.removeListener(onUpdated);
+                resolve();
+              }, 15000);
             });
 
-            if (convResult.success) {
-              allData.push(convResult.data);
+            // Inject content script into the newly loaded page and extract
+            try {
+              await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                files: ['content.js'],
+              });
+              await new Promise(r => setTimeout(r, 300));
+              const convResult = await chrome.tabs.sendMessage(tab.id, { action: 'exportCurrent' });
+              if (convResult?.success && convResult.data) {
+                const convData = convResult.data[0];
+                convData.title = list[i].title || convData.title;
+                allData.push(convData);
+              }
+            } catch (e) {
+              // Skip this conversation on error
             }
-
-            // Small delay to avoid overwhelming the page
-            await new Promise(r => setTimeout(r, 800));
           }
 
           result = { success: true, data: allData };

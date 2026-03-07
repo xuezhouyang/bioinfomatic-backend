@@ -1,33 +1,34 @@
 /**
  * Gemini Chat Export - Background Service Worker
- * Handles file downloads and message relay between popup and content scripts.
+ * Handles file downloads.
+ *
+ * Note: URL.createObjectURL is NOT available in MV3 service workers,
+ * so we convert content to a data: URI for downloads.
  */
 
-// Relay progress messages from content script to popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'exportProgress') {
-    // Forward to popup
-    chrome.runtime.sendMessage(message).catch(() => {
-      // Popup might be closed, ignore
-    });
+    // Forward to popup (best-effort, popup may be closed)
+    chrome.runtime.sendMessage(message).catch(() => {});
+    return;
   }
 
   if (message.action === 'downloadFile') {
     const { content, filename, mimeType } = message;
-    const blob = new Blob([content], { type: mimeType || 'application/json' });
-    const url = URL.createObjectURL(blob);
+
+    // Encode content as base64 data URI (service workers lack URL.createObjectURL)
+    const base64 = btoa(unescape(encodeURIComponent(content)));
+    const dataUrl = `data:${mimeType || 'application/octet-stream'};base64,${base64}`;
 
     chrome.downloads.download({
-      url: url,
+      url: dataUrl,
       filename: filename,
       saveAs: true,
     }, (downloadId) => {
-      // Revoke the URL after download starts
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
       sendResponse({ success: true, downloadId });
     });
 
-    return true;
+    return true; // async response needed for downloads.download callback
   }
 
   if (message.action === 'downloadBlob') {
@@ -40,6 +41,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true, downloadId });
     });
 
-    return true;
+    return true; // async response needed
   }
 });

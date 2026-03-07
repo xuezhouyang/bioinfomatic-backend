@@ -28,10 +28,32 @@
   let exportCancelled = false;
 
   /**
+   * Ensure the content script is injected into the active tab.
+   * This handles the case where the extension was installed/reloaded
+   * after the Gemini page was already open.
+   */
+  async function ensureContentScript(tabId) {
+    try {
+      // Try a ping first to see if content script is already loaded
+      await chrome.tabs.sendMessage(tabId, { action: 'checkPage' });
+    } catch (e) {
+      // Content script not loaded — inject it programmatically
+      await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        files: ['content.js'],
+      });
+      // Wait a moment for the script to initialize
+      await new Promise(r => setTimeout(r, 300));
+    }
+  }
+
+  /**
    * Send a message to the content script in the active tab.
+   * Automatically injects the content script if not already present.
    */
   async function sendToContent(message) {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    await ensureContentScript(tab.id);
     return chrome.tabs.sendMessage(tab.id, message);
   }
 

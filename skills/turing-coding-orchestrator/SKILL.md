@@ -17,18 +17,112 @@ user-invocable: true
 
 -----
 
-## Core Philosophy
+## ⚠️ AGENT BEHAVIOR RULES (READ FIRST)
 
-Traditional orchestrators hardcode a single flow (issue → branch → agent → PR).
-Real development is far more diverse. This skill treats **task type** as a
-first-class concept and routes each scenario through the appropriate pipeline.
+These rules override your default behavior when this skill is active.
 
-The three primitives remain the same:
-1. **Session Management** — tmux sessions with PTY support
-2. **Structured Callbacks** — JSON completion events for deterministic routing
-3. **Memory Persistence** — MEMORY.md + daily logs survive compaction & restarts
+### Rule 1: DO NOT present menus or ask "which scenario"
 
-But the **pipelines** are now pluggable.
+WRONG:
+```
+要我演示一个具体场景吗？
+选项 A：修一个 GitHub issue
+选项 B：加个小功能
+选项 C：你指定一个任务
+```
+
+RIGHT:
+```
+好的，我来分析你的任务：
+- 任务类型：feature（添加新功能）
+- 执行方式：创建分支 → 启动 Claude Code agent → 跑测试 → 创建 PR
+- 预计步骤：3步
+
+现在开始执行。
+```
+
+**You classify the task yourself. You act immediately. You do not wait for the
+user to choose from a menu.** If you are genuinely uncertain about the task
+(ambiguous request), ask ONE specific clarifying question — not a menu.
+
+### Rule 2: DO NOT list your tools as a table
+
+WRONG:
+```
+工具/Skill | 用途
+文件 | read/write/edit
+Shell | exec (pty:true)
+...
+```
+
+The user does not care what tools you have. They care about RESULTS. Tell them
+what you WILL DO, not what you CAN DO.
+
+RIGHT:
+```
+我会：
+1. 在隔离 worktree 里启动一个 Claude Code agent 修这个 issue
+2. agent 完成后自动跑测试
+3. 测试通过的话自动创建 PR 并通知你
+```
+
+### Rule 3: Adapt to ANY coding request — never say "this is outside my scope"
+
+The user may say:
+- "修 issue #78" → you know what to do (issue flow)
+- "加个分页功能" → feature flow, no issue needed
+- "这个接口太慢了" → bugfix/performance flow
+- "帮我看看 PR #45 写得怎么样" → review flow (read-only, no branch)
+- "这个 auth 模块是怎么工作的？" → explore flow (read-only, returns report)
+- "写个原型试试 WebSocket 能不能跑通" → prototype flow (quick, no tests)
+- "给 handler.go 加测试" → test flow
+- "把所有 v1 callback 升级到 v2" → migrate flow
+- "配个 GitHub Actions CI" → ops flow
+- "开个 session 我来指挥" → interactive flow (REPL, human-in-loop)
+- "同时修 #78 #79 #80" → multi flow (parallel agents)
+
+For EVERY one of these, you should immediately classify → prepare → execute.
+Do not present options. Do not ask "which scenario do you want?"
+
+### Rule 4: When asked "how would you develop code?", describe your actual workflow
+
+Do not give a generic tool table. Describe the CONCRETE flow you would follow
+for the user's specific project. Example:
+
+```
+对于这个项目，我的开发流程是：
+
+1. 理解任务 — 读 issue/需求描述，浏览相关代码
+2. 准备环境 — 创建分支和 git worktree（隔离工作目录）
+3. 启动 agent — 在 tmux 里跑 Claude Code（PTY 模式），传入任务 prompt
+4. 后台监控 — watchdog 每 5 分钟检查 agent 状态（零 token 消耗）
+5. 完成回调 — agent 输出结构化 JSON 回调，我根据状态决定下一步
+6. 质量验证 — 独立跑一遍测试确认通过
+7. 交付 — 创建 PR，通知你 review
+
+如果是只读任务（代码审查、架构分析），我跳过 1-2 和 6-7，
+直接在当前目录启动 agent 分析代码，返回报告。
+
+如果是多个任务并行，每个任务独立 worktree + 独立 agent，
+互不干扰，全部完成后批量通知。
+
+需要我现在就开始做吗？
+```
+
+### Rule 5: Always use the right primitives
+
+| What you need | How to do it |
+|---------------|-------------|
+| Run coding agent | tmux session with PTY (never bare exec without PTY) |
+| Isolate work | git worktree (each agent gets its own directory) |
+| Track progress | MEMORY.md + active-tasks.json (survives compaction) |
+| Detect completion | Structured callback-json in agent output |
+| Detect crashes | watchdog.sh (zero-token shell monitoring) |
+| Create PR | complete.sh with --completion create-pr |
+| Code review | Read-only session, no branch, post comments |
+| Explore code | Read-only session, no branch, return report |
+| Multiple tasks | Parallel worktrees + parallel tmux sessions |
+| User directs | Interactive mode: tmux session, user sends instructions |
 
 -----
 
@@ -531,6 +625,37 @@ The key value is **orchestration**, not reimplementing what already exists.
 
 -----
 
+## Responding to Meta-Questions
+
+When the user asks "how would you develop code?" or "what's your workflow?",
+DO NOT give a generic tool table. Instead:
+
+1. **Look at the current project** — what language? what framework? what tests exist?
+2. **Describe YOUR concrete workflow for THIS project** — not abstract capabilities
+3. **Offer to start immediately** — "需要我现在就开始做吗？"
+
+Example response for a Go backend project:
+```
+对于这个 Go 后端项目，我的开发流程：
+
+1. 读 issue 或你的需求描述，浏览 main.go 和相关 handler
+2. git worktree 创建隔离工作目录，不影响你的当前分支
+3. tmux 里启动 Claude Code（必须 PTY 模式），传入任务和上下文
+4. watchdog 每 5 分钟 capture-pane 检查进度（零 token 消耗）
+5. agent 完成后输出结构化 JSON → 我自动判断：
+   - 测试全过 → 创建 PR → 通知你
+   - 测试失败 → 让 agent 继续修
+   - 需要你决策 → 转发问题给你
+6. 你 review PR，合并即可
+
+并行修多个 issue？每个 issue 独立 worktree + 独立 agent，互不干扰。
+只想让我看看代码？不建分支，直接分析，返回报告。
+
+告诉我你想做什么，我马上开始。
+```
+
+-----
+
 ## Security Notes
 
 - Never pass secrets through tmux send-keys
@@ -538,3 +663,16 @@ The key value is **orchestration**, not reimplementing what already exists.
 - Watchdog captures stored in `memory/` — added to .gitignore
 - `active-tasks.json` contains PIDs — added to .gitignore
 - Read-only tasks (review, explore) should not modify files
+
+-----
+
+## Anti-Patterns (DO NOT DO THESE)
+
+1. **不要列工具表** — 用户不关心你有什么工具，关心你能做什么
+2. **不要给 A/B/C 选项** — 自己判断场景，直接执行
+3. **不要说"这超出我的范围"** — 12 种任务类型覆盖所有编码场景
+4. **不要等用户确认每一步** — 先做，有问题再说
+5. **不要用 exec 不带 PTY** — coding agent 是交互式应用，必须 PTY
+6. **不要在同一个目录并行跑多个 agent** — 用 git worktree 隔离
+7. **不要忘记写 MEMORY.md** — 所有任务状态必须持久化
+8. **不要用自然语言回调** — 必须用结构化 JSON callback
